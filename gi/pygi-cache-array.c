@@ -18,14 +18,10 @@
  * License along with this library; if not, see <http://www.gnu.org/licenses/>.
  */
 
-#include "pygi-array.h"
 #include "pygi-basictype.h"
 #include "pygi-info.h"
-#include "pygi-marshal-cleanup.h"
 #include "pygi-util.h"
-
-/* Needed for _pygi_marshal_cleanup_from_py_interface_struct_gvalue hack */
-#include "pygi-struct-marshal.h"
+#include "pygi-cache-private.h"
 
 /*
  * GArray to Python
@@ -323,7 +319,7 @@ _pygi_marshal_from_py_array (PyGIInvokeState *state,
                 || GI_IS_UNION_INFO (base_info)) {
                 PyGIArgCache *item_arg_cache =
                     (PyGIArgCache *)item_iface_cache;
-                PyGIMarshalCleanupFunc from_py_cleanup =
+                PyGIMarshalFromPyCleanupFunc from_py_cleanup =
                     item_arg_cache->from_py_cleanup;
 
                 if (g_type_is_a (item_iface_cache->g_type, G_TYPE_VALUE)) {
@@ -366,7 +362,7 @@ _pygi_marshal_from_py_array (PyGIInvokeState *state,
 err:
     if (sequence_cache->item_cache->from_py_cleanup != NULL) {
         gsize j;
-        PyGIMarshalCleanupFunc cleanup_func =
+        PyGIMarshalFromPyCleanupFunc cleanup_func =
             sequence_cache->item_cache->from_py_cleanup;
 
         /* Only attempt per item cleanup on pointer items */
@@ -460,7 +456,7 @@ _pygi_marshal_cleanup_from_py_array (PyGIInvokeState *state,
         if (sequence_cache->item_cache->from_py_cleanup != NULL) {
             gsize i;
             guint len;
-            PyGIMarshalCleanupFunc cleanup_func =
+            PyGIMarshalFromPyCleanupFunc cleanup_func =
                 sequence_cache->item_cache->from_py_cleanup;
 
             g_assert (array_ || ptr_array_);
@@ -514,6 +510,7 @@ _pygi_marshal_cleanup_from_py_array (PyGIInvokeState *state,
 /*
  * GArray from Python
  */
+
 static PyObject *
 _pygi_marshal_to_py_array (PyGIInvokeState *state,
                            PyGICallableCache *callable_cache,

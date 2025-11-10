@@ -59,10 +59,10 @@ typedef PyObject *(*PyGIMarshalToPyFunc) (PyGIInvokeState *state,
                                           GIArgument *arg,
                                           gpointer *cleanup_data);
 
-typedef void (*PyGIMarshalCleanupFunc) (PyGIInvokeState *state,
-                                        PyGIArgCache *arg_cache,
-                                        PyObject *py_arg, gpointer data,
-                                        gboolean was_processed);
+typedef void (*PyGIMarshalFromPyCleanupFunc) (PyGIInvokeState *state,
+                                              PyGIArgCache *arg_cache,
+                                              PyObject *py_arg, gpointer data,
+                                              gboolean was_processed);
 
 typedef void (*PyGIMarshalToPyCleanupFunc) (PyGIInvokeState *state,
                                             PyGIArgCache *arg_cache,
@@ -131,7 +131,7 @@ struct _PyGIArgCache {
     PyGIMarshalFromPyFunc from_py_marshaller;
     PyGIMarshalToPyFunc to_py_marshaller;
 
-    PyGIMarshalCleanupFunc from_py_cleanup;
+    PyGIMarshalFromPyCleanupFunc from_py_cleanup;
     PyGIMarshalToPyCleanupFunc to_py_cleanup;
 
     GDestroyNotify destroy_notify;
@@ -226,32 +226,16 @@ struct _PyGIVFuncCache {
     PyGIFunctionWithInstanceCache fwi_cache;
 };
 
-
-void pygi_arg_base_setup (
-    PyGIArgCache *arg_cache, GITypeInfo *type_info,
-    GIArgInfo *arg_info, /* may be NULL for return arguments */
-    GITransfer transfer, PyGIDirection direction);
-
-gboolean pygi_arg_sequence_setup (
-    PyGISequenceCache *seq_cache, GITypeInfo *type_info,
-    GIArgInfo *arg_info, /* may be NULL for return arguments */
-    GITransfer transfer, PyGIDirection direction,
-    PyGICallableCache *callable_cache);
-
-PyGIArgCache *pygi_arg_interface_new_from_info (
-    GITypeInfo *type_info,
-    GIArgInfo *arg_info, /* may be NULL for return arguments */
-    GITransfer transfer, PyGIDirection direction,
-    GIRegisteredTypeInfo *iface_info);
-
-PyGIArgCache *pygi_arg_cache_alloc (void);
-
-PyGIArgCache *pygi_arg_cache_new (GITypeInfo *type_info, GIArgInfo *arg_info,
-                                  GITransfer transfer, PyGIDirection direction,
-                                  PyGICallableCache *callable_cache,
-                                  gssize c_arg_index, gssize py_arg_index);
-
-void pygi_arg_cache_free (PyGIArgCache *cache);
+typedef struct _PyGICallbackCache {
+    PyGIArgCache arg_cache;
+    unsigned int user_data_index;
+    gboolean has_user_data;
+    unsigned int destroy_notify_index;
+    gboolean has_destroy_notify;
+    GIScopeType scope;
+    GIBaseInfo *interface_info;
+    PyGIClosureCache *closure_cache;
+} PyGICallbackCache;
 
 const char *pygi_arg_cache_get_name (PyGIArgCache *cache);
 
