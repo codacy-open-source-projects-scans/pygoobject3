@@ -36,7 +36,7 @@ extern PyObject *PyGIDeprecationWarning;
 static void pygobject_dealloc (PyGObject *self);
 static int pygobject_traverse (PyGObject *self, visitproc visit, void *arg);
 static PyObject *pyg_type_get_bases (GType gtype);
-static inline int pygobject_clear (PyGObject *self);
+static int pygobject_clear (PyGObject *self);
 static PyObject *pygobject_weak_ref_new (GObject *obj, PyObject *callback,
                                          PyObject *user_data);
 static void pygobject_inherit_slots (PyTypeObject *type, PyObject *bases,
@@ -51,11 +51,7 @@ GQuark pygobject_class_init_key;
 GQuark pygobject_wrapper_key;
 GQuark pygobject_has_updated_constructor_key;
 GQuark pygobject_instance_data_key;
-
-/* PyPy doesn't support tp_dictoffset, so we have to work around it */
-#ifndef PYPY_VERSION
-#define PYGI_OBJECT_USE_CUSTOM_DICT
-#endif
+GQuark pygobject_instance_dict_key;
 
 static GClosure *
 gclosure_from_pyfunc (PyGObject *object, PyObject *func)
@@ -255,76 +251,6 @@ pygobject_register_class (PyObject *dict, const gchar *type_name, GType gtype,
     PyDict_SetItemString (dict, (char *)class_name, (PyObject *)type);
 }
 
-static void
-pyg_toggle_notify (gpointer data, GObject *object, gboolean is_last_ref)
-{
-    PyGObject *self;
-    PyGILState_STATE state;
-
-    state = PyGILState_Ensure ();
-
-    /* Avoid thread safety problems by using qdata for wrapper retrieval
-     * instead of the user data argument.
-     * See: https://bugzilla.gnome.org/show_bug.cgi?id=709223
-     */
-    self = (PyGObject *)g_object_get_qdata (object, pygobject_wrapper_key);
-    if (self) {
-        if (is_last_ref)
-            Py_DECREF (self);
-        else
-            Py_INCREF (self);
-    }
-
-    PyGILState_Release (state);
-}
-
-static inline gboolean
-pygobject_toggle_ref_is_required (PyGObject *self)
-{
-#ifdef PYGI_OBJECT_USE_CUSTOM_DICT
-    return self->inst_dict != NULL;
-#else
-    PyObject *dict;
-    gboolean result;
-    dict = PyObject_GetAttrString ((PyObject *)self, "__dict__");
-    if (!dict) {
-        PyErr_Clear ();
-        return FALSE;
-    }
-    result = PyDict_Size (dict) != 0;
-    Py_DECREF (dict);
-    return result;
-#endif
-}
-
-static inline gboolean
-pygobject_toggle_ref_is_active (PyGObject *self)
-{
-    return self->private_flags.flags & PYGOBJECT_USING_TOGGLE_REF;
-}
-
-/* Called when the inst_dict is first created; switches the
-     reference counting strategy to start using toggle ref to keep the
-     wrapper alive while the GObject lives.  In contrast, while
-     inst_dict was NULL the python wrapper is allowed to die at
-     will and is recreated on demand. */
-static inline void
-pygobject_toggle_ref_ensure (PyGObject *self)
-{
-    if (pygobject_toggle_ref_is_active (self)) return;
-
-    if (!pygobject_toggle_ref_is_required (self)) return;
-
-    if (self->obj == NULL) return;
-
-    g_assert (self->obj->ref_count >= 1);
-    self->private_flags.flags |= PYGOBJECT_USING_TOGGLE_REF;
-    /* Note that add_toggle_ref will never immediately call back into pyg_toggle_notify */
-    Py_INCREF ((PyObject *)self);
-    g_object_add_toggle_ref (self->obj, pyg_toggle_notify, NULL);
-    g_object_unref (self->obj);
-}
-
 /**
  * pygobject_register_wrapper:
  * @self: the wrapper instance
@@ -347,8 +273,6 @@ pygobject_register_wrapper (PyObject *self)
     g_assert (gself->obj->ref_count >= 1);
     /* save wrapper pointer so we can access it later */
     g_object_set_qdata_full (gself->obj, pygobject_wrapper_key, gself, NULL);
-
-    pygobject_toggle_ref_ensure (gself);
 }
 
 static PyObject *
@@ -652,7 +576,16 @@ pygobject_new_full (GObject *obj, gboolean steal, gpointer g_class)
         if (tp->tp_flags & Py_TPFLAGS_HEAPTYPE) Py_INCREF (tp);
         self = PyObject_GC_New (PyGObject, tp);
         if (self == NULL) return NULL;
-        self->inst_dict = NULL;
+
+        self->inst_dict =
+            Py_XNewRef (g_object_get_qdata (obj, pygobject_instance_dict_key));
+
+#ifdef PYPY_VERSION
+        /* For PyPy objects, we set a custom dict we can keep around after the object dies */
+        if (self->inst_dict == NULL) self->inst_dict = PyDict_New ();
+        PyObject_GenericSetDict ((PyObject *)self, self->inst_dict, NULL);
+#endif
+
         self->weakreflist = NULL;
         self->private_flags.flags = 0;
         self->obj = obj;
@@ -938,19 +871,34 @@ pygobject_traverse (PyGObject *self, visitproc visit, void *arg)
     return ret;
 }
 
-static inline int
+static void
+pygobject_inst_dict_clear (PyObject *inst_dict)
+{
+    PyGILState_STATE state = PyGILState_Ensure ();
+
+    Py_XDECREF (inst_dict);
+    PyGILState_Release (state);
+}
+
+static int
 pygobject_clear (PyGObject *self)
 {
     if (self->obj) {
         g_object_set_qdata_full (self->obj, pygobject_wrapper_key, NULL, NULL);
-        if (pygobject_toggle_ref_is_active (self)) {
-            g_object_remove_toggle_ref (self->obj, pyg_toggle_notify, NULL);
-            self->private_flags.flags &= ~PYGOBJECT_USING_TOGGLE_REF;
+
+        /* Only store the instance dict if we know the gobject will outlive this wrapper. */
+        if (self->inst_dict != NULL && PyDict_Size (self->inst_dict) > 0) {
+            g_object_set_qdata_full (
+                self->obj, pygobject_instance_dict_key,
+                Py_NewRef (self->inst_dict),
+                (GDestroyNotify)pygobject_inst_dict_clear);
         } else {
-            Py_BEGIN_ALLOW_THREADS;
-            g_object_unref (self->obj);
-            Py_END_ALLOW_THREADS;
+            g_object_set_qdata_full (self->obj, pygobject_instance_dict_key,
+                                     NULL, NULL);
         }
+        Py_BEGIN_ALLOW_THREADS;
+        g_object_unref (self->obj);
+        Py_END_ALLOW_THREADS;
         self->obj = NULL;
     }
     Py_CLEAR (self->inst_dict);
@@ -996,12 +944,14 @@ pygobject_prepare_construct_properties (GObjectClass *class, PyObject *kwargs,
                 return FALSE;
             }
             g_value_init (gvalue, G_PARAM_SPEC_VALUE_TYPE (pspec));
-            if (pyg_param_gvalue_from_pyobject (gvalue, value, pspec) < 0) {
-                PyErr_Format (
-                    PyExc_TypeError,
-                    "could not convert value for property `%s' from %s to %s",
-                    key_str, Py_TYPE (value)->tp_name,
-                    g_type_name (G_PARAM_SPEC_VALUE_TYPE (pspec)));
+            if (pygi_set_gvalue_for_pspec (pspec, gvalue, value) < 0) {
+                if (!PyErr_Occurred ())
+                    PyErr_Format (
+                        PyExc_TypeError,
+                        "could not convert value for property `%s' from %s to "
+                        "%s",
+                        key_str, Py_TYPE (value)->tp_name,
+                        g_type_name (G_PARAM_SPEC_VALUE_TYPE (pspec)));
                 return FALSE;
             }
             (*names)[*n_properties] = g_strdup (key_str);
@@ -1021,6 +971,9 @@ pygobject_init (PyGObject *self, PyObject *args, PyObject *kwargs)
     const GValue *values = NULL;
     const char **names = NULL;
     GObjectClass *class;
+#ifdef PYPY_VERSION
+    PyObject *pypy_dict;
+#endif
 
     /* Only do GObject creation and property setting if the GObject hasn't
      * already been created. The case where self->obj already exists can occur
@@ -1034,6 +987,14 @@ pygobject_init (PyGObject *self, PyObject *args, PyObject *kwargs)
     if (self->obj != NULL) return 0;
 
     if (!PyArg_ParseTuple (args, ":GObject.__init__", NULL)) return -1;
+
+#ifdef PYPY_VERSION
+    /* For PyPy objects, we set a custom dict we can keep around after the object dies */
+    pypy_dict = PyObject_GenericGetDict ((PyObject *)self, NULL);
+    self->inst_dict = PyDict_Copy (pypy_dict);
+    Py_DECREF (pypy_dict);
+    PyObject_GenericSetDict ((PyObject *)self, self->inst_dict, NULL);
+#endif
 
     object_type = pyg_type_from_object ((PyObject *)self);
     if (!object_type) return -1;
@@ -1135,7 +1096,6 @@ pygobject_set_property (PyGObject *self, PyObject *args)
     gchar *param_name;
     GParamSpec *pspec;
     PyObject *pvalue;
-    int ret = -1;
 
     if (!PyArg_ParseTuple (args, "sO:GObject.set_property", &param_name,
                            &pvalue))
@@ -1152,16 +1112,8 @@ pygobject_set_property (PyGObject *self, PyObject *args)
         return NULL;
     }
 
-    ret = pygi_set_property_value (self, pspec, pvalue);
-    if (ret == 0)
-        goto done;
-    else if (PyErr_Occurred ())
-        return NULL;
-
-    if (pygi_set_property_from_pspec (self->obj, pspec, pvalue) != 0)
-        return NULL;
-
-done:
+    pygi_set_property_value (self, pspec, pvalue);
+    if (PyErr_Occurred ()) return NULL;
 
     Py_RETURN_NONE;
 }
@@ -1200,15 +1152,8 @@ pygobject_set_properties (PyGObject *self, PyObject *args, PyObject *kwargs)
 
         ret = pygi_set_property_value (self, pspec, value);
         if (ret != 0) {
-            /* Non-zero return code means that either an error occured ...*/
+            /* Non-zero return code means that an error occurred */
             if (PyErr_Occurred ()) goto exit;
-
-            /* ... or the property couldn't be found , so let's try the default
-             * call. */
-            if (pygi_set_property_from_pspec (G_OBJECT (self->obj), pspec,
-                                              value)
-                != 0)
-                goto exit;
         }
     }
 
@@ -1928,18 +1873,6 @@ static PyMethodDef pygobject_methods[] = {
     { NULL, NULL, 0 },
 };
 
-#ifdef PYGI_OBJECT_USE_CUSTOM_DICT
-static PyObject *
-pygobject_get_dict (PyGObject *self, void *closure)
-{
-    if (self->inst_dict == NULL) {
-        self->inst_dict = PyDict_New ();
-        pygobject_toggle_ref_ensure (self);
-    }
-    return Py_NewRef (self->inst_dict);
-}
-#endif
-
 static PyObject *
 pygobject_get_refcount (PyGObject *self, void *closure)
 {
@@ -1956,19 +1889,8 @@ pygobject_get_pointer (PyGObject *self, void *closure)
     return PyCapsule_New (self->obj, NULL, NULL);
 }
 
-static int
-pygobject_setattro (PyObject *self, PyObject *name, PyObject *value)
-{
-    int res;
-    res = PyGObject_Type.tp_base->tp_setattro (self, name, value);
-    pygobject_toggle_ref_ensure ((PyGObject *)self);
-    return res;
-}
-
 static PyGetSetDef pygobject_getsets[] = {
-#ifdef PYGI_OBJECT_USE_CUSTOM_DICT
-    { "__dict__", (getter)pygobject_get_dict, (setter)0 },
-#endif
+    { "__dict__", PyObject_GenericGetDict, (setter)0 },
     {
         "__grefcount__",
         (getter)pygobject_get_refcount,
@@ -2154,6 +2076,8 @@ pyg_object_register_types (PyObject *d)
         g_quark_from_static_string ("PyGObject::has-updated-constructor");
     pygobject_instance_data_key =
         g_quark_from_static_string ("PyGObject::instance-data");
+    pygobject_instance_dict_key =
+        g_quark_from_static_string ("PyGObject::instance-dict");
 
     /* GObject */
     if (!PY_TYPE_OBJECT)
@@ -2163,7 +2087,6 @@ pyg_object_register_types (PyObject *d)
     PyGObject_Type.tp_richcompare = pygobject_richcompare;
     PyGObject_Type.tp_repr = (reprfunc)pygobject_repr;
     PyGObject_Type.tp_hash = (hashfunc)pygobject_hash;
-    PyGObject_Type.tp_setattro = (setattrofunc)pygobject_setattro;
     PyGObject_Type.tp_flags =
         (Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE | Py_TPFLAGS_HAVE_GC);
     PyGObject_Type.tp_traverse = (traverseproc)pygobject_traverse;
@@ -2171,7 +2094,7 @@ pyg_object_register_types (PyObject *d)
     PyGObject_Type.tp_weaklistoffset = offsetof (PyGObject, weakreflist);
     PyGObject_Type.tp_methods = pygobject_methods;
     PyGObject_Type.tp_getset = pygobject_getsets;
-#ifdef PYGI_OBJECT_USE_CUSTOM_DICT
+#ifndef PYPY_VERSION
     PyGObject_Type.tp_dictoffset = offsetof (PyGObject, inst_dict);
 #endif
     PyGObject_Type.tp_init = (initproc)pygobject_init;
