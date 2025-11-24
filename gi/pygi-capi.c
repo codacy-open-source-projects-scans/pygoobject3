@@ -209,6 +209,18 @@ pyg_parse_constructor_args (GType obj_type, char **arg_names,
 
 G_GNUC_END_IGNORE_DEPRECATIONS
 
+
+static PyObject *
+pyg_param_gvalue_as_pyobject (const GValue *gvalue, gboolean copy_boxed,
+                              const GParamSpec *pspec)
+{
+    if (G_IS_PARAM_SPEC_UNICHAR (pspec)) {
+        return pygi_gunichar_to_py (g_value_get_uint (gvalue));
+    } else {
+        return pyg_value_to_pyobject (gvalue, copy_boxed);
+    }
+}
+
 /* Only for backwards compatibility */
 static int
 pygobject_enable_threads (void)
@@ -394,7 +406,7 @@ struct _PyGObject_Functions pygobject_api_functions = {
     pyg_flags_get_value,
     pyg_register_gtype_custom,
     pyg_value_from_pyobject,
-    pyg_value_as_pyobject,
+    pyg_value_to_pyobject,
 
     pyg_register_interface,
 

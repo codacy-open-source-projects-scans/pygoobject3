@@ -1117,7 +1117,7 @@ _pygi_g_type_tag_size (GITypeTag type_tag)
                       gi_type_tag_to_string (type_tag));
         break;
     default:
-        break;
+        g_assert_not_reached ();
     }
 
     return size;
@@ -1196,7 +1196,7 @@ _pygi_gi_type_info_size (GITypeInfo *type_info)
         size = sizeof (gpointer);
         break;
     default:
-        break;
+        g_assert_not_reached ();
     }
 
     return size;
@@ -1465,7 +1465,6 @@ pygi_gi_struct_info_is_simple (GIStructInfo *struct_info)
         }
         default:
             g_assert_not_reached ();
-            break;
         }
 
         gi_base_info_unref ((GIBaseInfo *)field_type_info);
@@ -1832,12 +1831,12 @@ _wrap_gi_constant_info_get_value (PyGIBaseInfo *self)
     type_info = gi_constant_info_get_type_info ((GIConstantInfo *)self->info);
 
     if (gi_type_info_get_tag (type_info) == GI_TYPE_TAG_ARRAY) {
-        value.v_pointer = _pygi_argument_to_array (&value, NULL, NULL, NULL,
+        value.v_pointer = _pygi_argument_to_array (value, NULL, NULL, NULL,
                                                    type_info, &free_array);
     }
 
     py_value =
-        _pygi_argument_to_object (&value, type_info, GI_TRANSFER_NOTHING);
+        _pygi_argument_to_object (value, type_info, GI_TRANSFER_NOTHING);
 
     if (free_array) {
         g_array_free (value.v_pointer, FALSE);
@@ -1878,14 +1877,14 @@ static PyMethodDef _PyGIValueInfo_methods[] = {
 /* GIFieldInfo */
 PYGI_DEFINE_TYPE ("gi.FieldInfo", PyGIFieldInfo_Type, PyGIBaseInfo);
 
-static gssize
+static gboolean
 _struct_field_array_length_marshal (gsize length_index, void *container_ptr,
-                                    void *struct_data_ptr)
+                                    void *struct_data_ptr, gsize *array_len)
 {
-    gssize array_len = -1;
     GIFieldInfo *array_len_field = NULL;
     GIArgument arg = { 0 };
     GIBaseInfo *container_info = (GIBaseInfo *)container_ptr;
+    gboolean result = TRUE;
 
     if (GI_IS_UNION_INFO (container_info)) {
         array_len_field = gi_union_info_get_field (
@@ -1902,7 +1901,7 @@ _struct_field_array_length_marshal (gsize length_index, void *container_ptr,
     }
 
     if (array_len_field == NULL) {
-        return -1;
+        return FALSE;
     }
 
     if (gi_field_info_get_field (array_len_field, struct_data_ptr, &arg)) {
@@ -1913,10 +1912,9 @@ _struct_field_array_length_marshal (gsize length_index, void *container_ptr,
             goto out;
         }
 
-        if (!pygi_argument_to_gssize (
-                &arg, gi_type_info_get_tag (array_len_type_info),
-                &array_len)) {
-            array_len = -1;
+        if (!pygi_argument_to_gsize (
+                arg, gi_type_info_get_tag (array_len_type_info), array_len)) {
+            result = FALSE;
         }
 
         gi_base_info_unref (array_len_type_info);
@@ -1924,7 +1922,7 @@ _struct_field_array_length_marshal (gsize length_index, void *container_ptr,
 
 out:
     gi_base_info_unref (array_len_field);
-    return array_len;
+    return result;
 }
 
 static gint
@@ -2081,13 +2079,13 @@ _wrap_gi_field_info_get_value (PyGIBaseInfo *self, PyObject *args)
 
     if (gi_type_info_get_tag (field_type_info) == GI_TYPE_TAG_ARRAY) {
         value.v_pointer = _pygi_argument_to_array (
-            &value, _struct_field_array_length_marshal, container_info,
-            pointer, field_type_info, &free_array);
+            value, _struct_field_array_length_marshal, container_info, pointer,
+            field_type_info, &free_array);
     }
 
 argument_to_object:
-    py_value = _pygi_argument_to_object (&value, field_type_info,
-                                         GI_TRANSFER_NOTHING);
+    py_value =
+        _pygi_argument_to_object (value, field_type_info, GI_TRANSFER_NOTHING);
 
     if (free_array) {
         g_array_free (value.v_pointer, FALSE);

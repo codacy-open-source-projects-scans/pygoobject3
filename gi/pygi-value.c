@@ -162,7 +162,7 @@ _pygi_argument_from_g_value (const GValue *value, GITypeInfo *type_info)
         arg.v_pointer = g_value_get_pointer (value);
         break;
     default:
-        break;
+        g_assert_not_reached ();
     }
 
     return arg;
@@ -643,19 +643,17 @@ pyg_value_from_pyobject (GValue *value, PyObject *obj)
 /**
  * pygi_value_to_py_basic_type:
  * @value: the GValue object.
- * @handled: (out): TRUE if the return value is defined
  *
  * This function creates/returns a Python wrapper object that
  * represents the GValue passed as an argument limited to supporting basic types
  * like ints, bools, and strings.
  *
- * Returns: a PyObject representing the value.
+ * Returns: a PyObject representing the value. NULL if value could not be wrapped.
+ *   A error may have been set if translation failed.
  */
 PyObject *
-pygi_value_to_py_basic_type (const GValue *value, GType fundamental,
-                             gboolean *handled)
+pygi_value_to_py_basic_type (const GValue *value, GType fundamental)
 {
-    *handled = TRUE;
     switch (fundamental) {
     case G_TYPE_CHAR:
         return PyLong_FromLong (g_value_get_schar (value));
@@ -688,7 +686,6 @@ pygi_value_to_py_basic_type (const GValue *value, GType fundamental,
     case G_TYPE_STRING:
         return pygi_utf8_to_py (g_value_get_string (value));
     default:
-        *handled = FALSE;
         return NULL;
     }
 }
@@ -738,7 +735,7 @@ value_to_py_structured_type (const GValue *value, GType fundamental,
             return ret;
         } else if (G_VALUE_HOLDS (value, G_TYPE_VALUE)) {
             GValue *n_value = g_value_get_boxed (value);
-            return pyg_value_as_pyobject (n_value, copy_boxed);
+            return pyg_value_to_pyobject (n_value, copy_boxed);
         } else if (holds_value_array) {
             GValueArray *array = (GValueArray *)g_value_get_boxed (value);
             Py_ssize_t n_values = array ? array->n_values : 0;
@@ -747,7 +744,7 @@ value_to_py_structured_type (const GValue *value, GType fundamental,
             for (i = 0; i < n_values; ++i)
                 PyList_SET_ITEM (
                     ret, i,
-                    pyg_value_as_pyobject (array->values + i, copy_boxed));
+                    pyg_value_to_pyobject (array->values + i, copy_boxed));
             return ret;
         } else if (G_VALUE_HOLDS (value, G_TYPE_GSTRING)) {
             GString *string = (GString *)g_value_get_boxed (value);
@@ -818,7 +815,7 @@ value_to_py_structured_type (const GValue *value, GType fundamental,
 
 
 /**
- * pyg_value_as_pyobject:
+ * pyg_value_to_pyobject:
  * @value: the GValue object.
  * @copy_boxed: true if boxed values should be copied.
  *
@@ -828,10 +825,9 @@ value_to_py_structured_type (const GValue *value, GType fundamental,
  * Returns: a PyObject representing the value or %NULL and sets an exception.
  */
 PyObject *
-pyg_value_as_pyobject (const GValue *value, gboolean copy_boxed)
+pyg_value_to_pyobject (const GValue *value, gboolean copy_boxed)
 {
     PyObject *pyobj;
-    gboolean handled;
     GType fundamental = G_TYPE_FUNDAMENTAL (G_VALUE_TYPE (value));
 
     /* HACK: special case char and uchar to return PyBytes intstead of integers
@@ -846,8 +842,8 @@ pyg_value_as_pyobject (const GValue *value, gboolean copy_boxed)
         return PyBytes_FromStringAndSize ((char *)&val, 1);
     }
 
-    pyobj = pygi_value_to_py_basic_type (value, fundamental, &handled);
-    if (handled) return pyobj;
+    pyobj = pygi_value_to_py_basic_type (value, fundamental);
+    if (pyobj != NULL || PyErr_Occurred ()) return pyobj;
 
     pyobj = value_to_py_structured_type (value, fundamental, copy_boxed);
     return pyobj;
@@ -868,38 +864,15 @@ pyg_param_gvalue_from_pyobject (GValue *value, PyObject *py_obj,
         }
         g_value_set_uint (value, u);
         return 0;
-    } else if (PYGI_IS_PARAM_SPEC_VALUE_ARRAY (pspec))
+    } else if (PYGI_IS_PARAM_SPEC_VALUE_ARRAY (pspec)) {
         return pyg_value_array_from_pyobject (
             value, py_obj, PYGI_PARAM_SPEC_VALUE_ARRAY (pspec));
-    else {
+    } else {
         return pyg_value_from_pyobject (value, py_obj);
     }
 }
 
 G_GNUC_END_IGNORE_DEPRECATIONS
-
-PyObject *
-pyg_param_gvalue_as_pyobject (const GValue *gvalue, gboolean copy_boxed,
-                              const GParamSpec *pspec)
-{
-    if (G_IS_PARAM_SPEC_UNICHAR (pspec)) {
-        gunichar u;
-        gchar *encoded;
-        PyObject *retval;
-
-        u = g_value_get_uint (gvalue);
-        encoded = g_ucs4_to_utf8 (&u, 1, NULL, NULL, NULL);
-        if (encoded == NULL) {
-            PyErr_SetString (PyExc_ValueError, "Failed to decode");
-            return NULL;
-        }
-        retval = PyUnicode_FromString (encoded);
-        g_free (encoded);
-        return retval;
-    } else {
-        return pyg_value_as_pyobject (gvalue, copy_boxed);
-    }
-}
 
 PyObject *
 pyg__gvalue_get (PyObject *module, PyObject *pygvalue)
@@ -909,7 +882,7 @@ pyg__gvalue_get (PyObject *module, PyObject *pygvalue)
         return NULL;
     }
 
-    return pyg_value_as_pyobject (pyg_boxed_get (pygvalue, GValue),
+    return pyg_value_to_pyobject (pyg_boxed_get (pygvalue, GValue),
                                   /*copy_boxed=*/TRUE);
 }
 

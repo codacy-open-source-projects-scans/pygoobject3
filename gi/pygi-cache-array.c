@@ -18,6 +18,7 @@
  * License along with this library; if not, see <http://www.gnu.org/licenses/>.
  */
 
+#include "pygi-argument.h"
 #include "pygi-basictype.h"
 #include "pygi-info.h"
 #include "pygi-util.h"
@@ -109,8 +110,9 @@ gi_argument_from_py_ssize_t (GIArgument *arg_out, Py_ssize_t size_in,
     case GI_TYPE_TAG_GHASH:
     case GI_TYPE_TAG_ERROR:
     case GI_TYPE_TAG_UNICHAR:
-    default:
         goto unhandled_type;
+    default:
+        g_assert_not_reached ();
     }
 
 overflow:
@@ -123,51 +125,6 @@ unhandled_type:
     PyErr_Format (PyExc_TypeError, "Unable to marshal C Py_ssize_t %zd to %s",
                   size_in, gi_type_tag_to_string (type_tag));
     return FALSE;
-}
-
-static gboolean
-gi_argument_to_gsize (GIArgument *arg_in, gsize *gsize_out, GITypeTag type_tag)
-{
-    switch (type_tag) {
-    case GI_TYPE_TAG_INT8:
-        *gsize_out = arg_in->v_int8;
-        return TRUE;
-    case GI_TYPE_TAG_UINT8:
-        *gsize_out = arg_in->v_uint8;
-        return TRUE;
-    case GI_TYPE_TAG_INT16:
-        *gsize_out = arg_in->v_int16;
-        return TRUE;
-    case GI_TYPE_TAG_UINT16:
-        *gsize_out = arg_in->v_uint16;
-        return TRUE;
-    case GI_TYPE_TAG_INT32:
-        *gsize_out = arg_in->v_int32;
-        return TRUE;
-    case GI_TYPE_TAG_UINT32:
-        *gsize_out = arg_in->v_uint32;
-        return TRUE;
-    case GI_TYPE_TAG_INT64:
-        if (arg_in->v_uint64 > G_MAXSIZE) {
-            PyErr_Format (PyExc_TypeError, "Unable to marshal %s to gsize",
-                          gi_type_tag_to_string (type_tag));
-            return FALSE;
-        }
-        *gsize_out = (gsize)arg_in->v_int64;
-        return TRUE;
-    case GI_TYPE_TAG_UINT64:
-        if (arg_in->v_uint64 > G_MAXSIZE) {
-            PyErr_Format (PyExc_TypeError, "Unable to marshal %s to gsize",
-                          gi_type_tag_to_string (type_tag));
-            return FALSE;
-        }
-        *gsize_out = (gsize)arg_in->v_uint64;
-        return TRUE;
-    default:
-        PyErr_Format (PyExc_TypeError, "Unable to marshal %s to gsize",
-                      gi_type_tag_to_string (type_tag));
-        return FALSE;
-    }
 }
 
 static gboolean
@@ -548,12 +505,12 @@ _pygi_marshal_to_py_array (PyGIInvokeState *state,
                 g_assert_not_reached ();
             }
         } else if (array_cache->has_len_arg) {
-            GIArgument *len_arg =
-                &state->args[array_cache->len_arg_index].arg_value;
+            GIArgument len_arg =
+                state->args[array_cache->len_arg_index].arg_value;
             PyGIArgCache *sub_cache = _pygi_callable_cache_get_arg (
                 callable_cache, array_cache->len_arg_index);
 
-            if (!gi_argument_to_gsize (len_arg, &len, sub_cache->type_tag)) {
+            if (!pygi_argument_to_gsize (len_arg, sub_cache->type_tag, &len)) {
                 return NULL;
             }
         }

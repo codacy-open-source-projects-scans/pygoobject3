@@ -22,6 +22,7 @@
  */
 
 #include "pygi-argument.h"
+#include "pygi-basictype.h"
 #include "pygi-fundamental.h"
 #include "pygi-property.h"
 #include "pygi-repository.h"
@@ -123,7 +124,6 @@ pygi_get_property_value (PyGObject *instance, GParamSpec *pspec)
     };
     PyObject *py_value = NULL;
     GType fundamental;
-    gboolean handled;
 
     if (!(pspec->flags & G_PARAM_READABLE)) {
         PyErr_Format (PyExc_TypeError, "property %s is not readable",
@@ -140,13 +140,18 @@ pygi_get_property_value (PyGObject *instance, GParamSpec *pspec)
     Py_BEGIN_ALLOW_THREADS;
     g_value_init (&value, G_PARAM_SPEC_VALUE_TYPE (pspec));
     g_object_get_property (instance->obj, pspec->name, &value);
-    fundamental = G_TYPE_FUNDAMENTAL (G_VALUE_TYPE (&value));
     Py_END_ALLOW_THREADS;
 
+    // special case: unichar, which has a uint type
+    if (G_IS_PARAM_SPEC_UNICHAR (pspec)) {
+        py_value = pygi_gunichar_to_py (g_value_get_uint (&value));
+        goto out;
+    }
 
-    /* Fast path basic types which don't need GI type info. */
-    py_value = pygi_value_to_py_basic_type (&value, fundamental, &handled);
-    if (handled) {
+    /* Fast path: basic types which don't need GI type info. */
+    fundamental = G_TYPE_FUNDAMENTAL (G_VALUE_TYPE (&value));
+    py_value = pygi_value_to_py_basic_type (&value, fundamental);
+    if (py_value != NULL || PyErr_Occurred ()) {
         goto out;
     }
 
@@ -168,14 +173,14 @@ pygi_get_property_value (PyGObject *instance, GParamSpec *pspec)
 
         /* Arrays are special cased, see note in _pygi_argument_to_array. */
         if (gi_type_info_get_tag (type_info) == GI_TYPE_TAG_ARRAY) {
-            arg.v_pointer = _pygi_argument_to_array (&arg, NULL, NULL, NULL,
+            arg.v_pointer = _pygi_argument_to_array (arg, NULL, NULL, NULL,
                                                      type_info, &free_array);
         } else if (g_type_is_a (pspec->value_type, G_TYPE_BOXED)) {
             arg.v_pointer = g_value_dup_boxed (&value);
             transfer = GI_TRANSFER_EVERYTHING;
         }
 
-        py_value = _pygi_argument_to_object (&arg, type_info, transfer);
+        py_value = _pygi_argument_to_object (arg, type_info, transfer);
 
         if (free_array) {
             g_array_free (arg.v_pointer, FALSE);
@@ -191,7 +196,7 @@ pygi_get_property_value (PyGObject *instance, GParamSpec *pspec)
 
     /* Fallback to GValue marshalling. */
     if (py_value == NULL) {
-        py_value = pyg_param_gvalue_as_pyobject (&value, TRUE, pspec);
+        py_value = pyg_value_to_pyobject (&value, TRUE);
     }
 
 out:
@@ -304,6 +309,7 @@ pygi_set_property_gvalue_from_property_info (GIPropertyInfo *property_info,
         break;
     case GI_TYPE_TAG_UINT16:
     case GI_TYPE_TAG_UINT32:
+    case GI_TYPE_TAG_UNICHAR:
         if (G_VALUE_HOLDS_ULONG (value))
             g_value_set_ulong (value, arg.v_ulong);
         else
@@ -356,12 +362,16 @@ pygi_set_property_gvalue_from_property_info (GIPropertyInfo *property_info,
         g_array_free (arg_items, TRUE);
         break;
     }
-    default:
+    case GI_TYPE_TAG_VOID:
+    case GI_TYPE_TAG_GSLIST:
+    case GI_TYPE_TAG_ERROR:
         PyErr_Format (
             PyExc_NotImplementedError,
             "Setting properties of type %s is not implemented",
             gi_type_tag_to_string (gi_type_info_get_tag (type_info)));
         goto out;
+    default:
+        g_assert_not_reached ();
     }
 
     ret_value = 0;
@@ -428,7 +438,15 @@ pygi_set_property_value (PyGObject *instance, GParamSpec *pspec,
         goto out;
     }
 
-    if (pygi_set_gvalue_for_pspec (pspec, &value, py_value) < 0) {
+    // special case: unichar has an internal type uint
+    if (G_IS_PARAM_SPEC_UNICHAR (pspec)) {
+        gunichar u;
+
+        if (!pygi_gunichar_from_py (py_value, &u)) {
+            goto out;
+        }
+        g_value_set_uint (&value, u);
+    } else if (pygi_set_gvalue_for_pspec (pspec, &value, py_value) < 0) {
         /* If we already have an error set, don't override it,
          * otherwise raise a TypError indcating that we couldn't
          * set the property */
