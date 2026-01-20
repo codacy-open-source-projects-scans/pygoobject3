@@ -150,10 +150,9 @@ _pygi_argument_from_g_value (const GValue *value, GITypeInfo *type_info)
             }
             break;
         case PYGI_INTERFACE_TYPE_TAG_CALLBACK:
-            PyErr_Format (
-                PyExc_NotImplementedError,
-                "Converting GValue's of type '%s' is not implemented.",
-                g_type_name (G_TYPE_FROM_INSTANCE (info)));
+            PyErr_Format (PyExc_TypeError,
+                          "Converting GValue's of type '%s' is not supported.",
+                          g_type_name (G_TYPE_FROM_INSTANCE (info)));
             break;
         default:
             g_assert_not_reached ();
@@ -265,12 +264,12 @@ pyg_array_from_pyobject (GValue *value, PyObject *obj)
     GArray *array;
 
     len = PySequence_Length (obj);
-    if (len == -1) {
+    if (len < 0 || (size_t)len > UINT_MAX) {
         PyErr_Clear ();
         return -1;
     }
 
-    array = g_array_sized_new (FALSE, TRUE, sizeof (GValue), len);
+    array = g_array_sized_new (FALSE, TRUE, sizeof (GValue), (guint)len);
     g_array_set_clear_func (array, (GDestroyNotify)g_value_unset);
 
     for (i = 0; i < len; ++i) {

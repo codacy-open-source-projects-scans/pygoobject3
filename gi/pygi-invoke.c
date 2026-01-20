@@ -406,7 +406,6 @@ _invoke_marshal_in_args (PyGIInvokeState *state,
                          PyGIFunctionCache *function_cache)
 {
     PyGICallableCache *cache = (PyGICallableCache *)function_cache;
-    gssize i;
 
     if (state->n_py_in_args > cache->n_py_args) {
         char *full_name = pygi_callable_cache_get_full_name (cache);
@@ -439,7 +438,7 @@ _invoke_marshal_in_args (PyGIInvokeState *state,
             pygi_async_new (function_cache->async_finish, cancellable);
     }
 
-    for (i = 0; (gsize)i < _pygi_callable_cache_args_len (cache); i++) {
+    for (guint i = 0; i < _pygi_callable_cache_args_len (cache); i++) {
         GIArgument *c_arg = &state->args[i].arg_value;
         PyGIArgCache *arg_cache = g_ptr_array_index (cache->args_cache, i);
         PyObject *py_arg = NULL;
@@ -465,8 +464,8 @@ _invoke_marshal_in_args (PyGIInvokeState *state,
                 g_free (full_name);
 
                 /* clean up all of the args we have already marshalled,
-                     * since invoke will not be called
-                     */
+                 * since invoke will not be called.
+                 */
                 pygi_marshal_cleanup_args_from_py_parameter_fail (state, cache,
                                                                   i);
                 return FALSE;
@@ -498,20 +497,20 @@ _invoke_marshal_in_args (PyGIInvokeState *state,
 
         case PYGI_DIRECTION_TO_PYTHON:
             /* arg_pointers always stores a pointer to the data to be marshaled "to python"
-                 * even in cases where arg_pointers is not being used as indirection between
-                 * ffi and arg_values. This gives a guarantee that out argument marshaling
-                 * (_invoke_marshal_out_args) can always rely on arg_pointers pointing to
-                 * the correct chunk of memory to marshal.
-                 */
+             * even in cases where arg_pointers is not being used as indirection between
+             * ffi and arg_values. This gives a guarantee that out argument marshaling
+             * (_invoke_marshal_out_args) can always rely on arg_pointers pointing to
+             * the correct chunk of memory to marshal.
+             */
             state->args[i].arg_pointer.v_pointer = c_arg;
 
             if (pygi_arg_cache_is_caller_allocates (arg_cache)) {
                 /* In the case of caller allocated out args, we don't use
-                     * an extra level of indirection and state->args will point
-                     * directly at the data to be marshaled. However, as noted
-                     * above, arg_pointers will also point to this caller allocated
-                     * chunk of memory used by out argument marshaling.
-                     */
+                 * an extra level of indirection and state->args will point
+                 * directly at the data to be marshaled. However, as noted
+                 * above, arg_pointers will also point to this caller allocated
+                 * chunk of memory used by out argument marshaling.
+                 */
                 state->ffi_args[i] = c_arg;
 
                 if (!_caller_alloc (arg_cache, c_arg)) {
@@ -528,7 +527,7 @@ _invoke_marshal_in_args (PyGIInvokeState *state,
                 }
             } else {
                 /* Non-caller allocated out args will use arg_pointers as an
-                     * extra level of indirection */
+                 * extra level of indirection */
                 state->ffi_args[i] = &state->args[i].arg_pointer;
             }
 

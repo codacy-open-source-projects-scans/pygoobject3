@@ -47,8 +47,6 @@
 #include "pygobject-types.h"
 #include "pygobject-object.h"
 #include "pygobject-props.h"
-#include "pygoptioncontext.h"
-#include "pygoptiongroup.h"
 #include "pygpointer.h"
 #include "pygspawn.h"
 
@@ -563,7 +561,7 @@ _wrap_pyg_hook_up_vfunc_implementation (PyObject *self, PyObject *args)
     if (field_info != NULL) {
         GITypeInfo *type_info;
         GICallableInfo *callable_info;
-        gint offset;
+        size_t offset;
 
         type_info = gi_field_info_get_type_info (field_info);
         callable_info =
@@ -1185,9 +1183,6 @@ _gi_exec (PyObject *module)
     if ((ret = pygi_async_register_types (module) < 0)) return ret;
 
     if ((ret = pygi_spawn_register_types (module_dict)) < 0) return ret;
-    if ((ret = pygi_option_context_register_types (module_dict)) < 0)
-        return ret;
-    if ((ret = pygi_option_group_register_types (module_dict)) < 0) return ret;
 
     if ((ret = pygi_register_constants (module)) < 0) return ret;
     if ((ret = pygi_register_version_tuples (module_dict)) < 0) return ret;

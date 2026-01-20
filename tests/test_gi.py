@@ -2227,7 +2227,7 @@ class TestGFlags(unittest.TestCase):
         GIMarshallingTests.flags_in_zero(Number(0))
         GIMarshallingTests.Flags.in_zero(Number(0))
 
-        self.assertRaises(TypeError, GIMarshallingTests.flags_in, 1 << 1)
+        GIMarshallingTests.flags_in(1 << 1)
         self.assertRaises(
             TypeError, GIMarshallingTests.flags_in, "GIMarshallingTests.Flags.VALUE2"
         )
@@ -2327,7 +2327,7 @@ class TestNoTypeFlags(unittest.TestCase):
         )
         GIMarshallingTests.no_type_flags_in_zero(Number(0))
 
-        self.assertRaises(TypeError, GIMarshallingTests.no_type_flags_in, 1 << 1)
+        GIMarshallingTests.no_type_flags_in(1 << 1)
         self.assertRaises(
             TypeError,
             GIMarshallingTests.no_type_flags_in,
@@ -2883,9 +2883,6 @@ class TestPythonGObject(unittest.TestCase):
         object_ = self.Object(int=42)
         self.assertTrue(isinstance(object_, self.Object))
 
-    @unittest.skipUnless(
-        hasattr(GIMarshallingTests.Object, "new_fail"), "Requires newer version of GI"
-    )
     def test_object_fail(self):
         with self.assertRaises(GLib.Error):
             GIMarshallingTests.Object.new_fail(int_=42)
@@ -3068,10 +3065,6 @@ class TestPythonGObject(unittest.TestCase):
         self.assertEqual(len(exc), 1)
         self.assertEqual(exc[0].type, ValueError)
 
-    @unittest.skipUnless(
-        hasattr(GIMarshallingTests, "callback_owned_boxed"),
-        "requires newer version of GI",
-    )
     def test_callback_owned_box(self):
         def callback(box, data):
             self.box = box
@@ -3502,10 +3495,6 @@ class TestKeywordArgs(unittest.TestCase):
         GIMarshallingTests.int_three_in_three_out(1, c=4, **d)
         self.assertEqual(d, d2)
 
-    @unittest.skipUnless(
-        hasattr(GIMarshallingTests, "int_one_in_utf8_two_in_one_allows_none"),
-        "Requires newer GIMarshallingTests",
-    )
     def test_allow_none_as_default(self):
         GIMarshallingTests.int_two_in_utf8_two_in_with_allow_none(1, 2, "3", "4")
         GIMarshallingTests.int_two_in_utf8_two_in_with_allow_none(1, 2, "3")
