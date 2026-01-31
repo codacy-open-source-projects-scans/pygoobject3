@@ -773,6 +773,11 @@ pygobject__g_instance_init (GTypeInstance *instance, gpointer g_class)
             PyErr_Print ();
         else
             Py_DECREF (result);
+
+#ifndef PYPY_VERSION
+        /* TODO: why does this decref cause PyPy to crash? */
+        Py_DECREF (wrapper);
+#endif
     }
 
     PyGILState_Release (state);
@@ -1953,7 +1958,7 @@ pygobject_weak_ref_notify (PyGObjectWeakRef *self, GObject *dummy)
                               " of type %s, should return None",
                               Py_TYPE (retval)->tp_name);
             Py_DECREF (retval);
-            PyErr_Print ();
+            if (PyErr_Occurred ()) PyErr_Print ();
         } else
             PyErr_Print ();
         Py_CLEAR (self->callback);
