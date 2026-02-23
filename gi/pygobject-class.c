@@ -33,7 +33,22 @@
 #include "pygi-value.h"
 #include "pygobject-object.h"
 
+extern GQuark pygobject_instance_init_ref_count;
 extern GQuark pygobject_has_dispose_method;
+
+static GPrivate pygobject_construction_wrapper;
+
+void
+pygobject_init_wrapper_set (PyObject *wrapper)
+{
+    g_private_set (&pygobject_construction_wrapper, wrapper);
+}
+
+static inline PyObject *
+pygobject_init_wrapper_get (void)
+{
+    return (PyObject *)g_private_get (&pygobject_construction_wrapper);
+}
 
 typedef struct _PyGSignalAccumulatorData {
     PyObject *callable;
@@ -661,6 +676,129 @@ pyg_object_dispose (GObject *object)
     }
 }
 
+static void
+pyg_object_constructed (GObject *object)
+{
+    GObjectClass *klass = G_OBJECT_GET_CLASS (object);
+    PyObject *wrapper, *retval;
+    PyGILState_STATE state;
+    int instance_init_ref_count;
+
+    /* Find the first non-pygobject constructed method. */
+    while (klass && klass->constructed == pyg_object_constructed) {
+        klass = g_type_class_peek_parent (klass);
+    }
+
+    if (klass && klass->constructed) {
+        klass->constructed (object);
+    }
+
+    state = PyGILState_Ensure ();
+
+    wrapper = (PyObject *)g_object_get_qdata (object, pygobject_wrapper_key);
+    g_assert (wrapper != NULL);
+
+    if (!PyErr_Occurred ()
+        && PyObject_HasAttrString (wrapper, "do_constructed")) {
+        retval = PyObject_CallMethod (wrapper, "do_constructed", NULL);
+        Py_XDECREF (retval);
+    }
+
+    /* Release the reference obtained in pygobject__g_instance_init(). */
+    instance_init_ref_count = GPOINTER_TO_INT (
+        g_object_get_qdata (object, pygobject_instance_init_ref_count));
+    for (int i = 0; i < instance_init_ref_count; i++) Py_DECREF (wrapper);
+    g_object_set_qdata (object, pygobject_instance_init_ref_count, NULL);
+
+#ifdef PYPY_VERSION
+    /* Force a new wrapper next time the wrapper is retrieved.
+     * Somehow if we keep this wrapper around we may end up refering to
+     * a semi-destroyed wrapper object. */
+    g_object_set_qdata_full (object, pygobject_wrapper_key, NULL, NULL);
+#endif
+
+    PyGILState_Release (state);
+}
+
+void
+pygobject__g_instance_init (GTypeInstance *instance, gpointer g_class)
+{
+    GObject *object;
+    PyObject *wrapper, *result;
+    PyGILState_STATE state;
+    gboolean needs_init = FALSE;
+
+    g_return_if_fail (G_IS_OBJECT (instance));
+
+    object = (GObject *)instance;
+
+    wrapper = g_object_get_qdata (object, pygobject_wrapper_key);
+
+    if (wrapper == NULL) {
+        wrapper = pygobject_init_wrapper_get ();
+        if (wrapper && ((PyGObject *)wrapper)->obj == NULL) {
+            ((PyGObject *)wrapper)->obj = object;
+            pygobject_register_wrapper (wrapper);
+        }
+    }
+    pygobject_init_wrapper_set (NULL);
+
+    state = PyGILState_Ensure ();
+
+    if (wrapper == NULL) {
+        /* This looks like a python object created through g_object_new().
+         * we have no python wrapper, so create it now. */
+
+        if (g_object_is_floating (object)) {
+            g_object_ref (object);
+            wrapper = pygobject_new_full (object,
+                                          /*steal=*/TRUE, g_class);
+            g_object_force_floating (object);
+        } else {
+            wrapper = pygobject_new_full (object,
+                                          /*steal=*/FALSE, g_class);
+        }
+
+        needs_init = TRUE;
+    }
+
+    /* XXX: used for Gtk.Template */
+    gboolean is_final_subclass = G_OBJECT_TYPE (object)
+                                 == G_OBJECT_CLASS_TYPE (g_class);
+    if (is_final_subclass
+        && PyObject_HasAttrString ((PyObject *)Py_TYPE (wrapper),
+                                   "__dontuse_ginstance_init__")) {
+        result =
+            PyObject_CallMethod (wrapper, "__dontuse_ginstance_init__", NULL);
+        if (result == NULL)
+            PyErr_Print ();
+        else
+            Py_DECREF (result);
+    }
+
+    if (needs_init) {
+        result = PyObject_CallMethod (wrapper, "__init__", NULL);
+        if (result == NULL)
+            PyErr_Print ();
+        else
+            Py_DECREF (result);
+
+        /* The wrapper's reference will be released in pyg_object_constructed(). */
+        g_object_set_qdata (object, pygobject_instance_init_ref_count,
+                            GINT_TO_POINTER (1));
+    } else {
+        int instance_init_ref_count = GPOINTER_TO_INT (
+            g_object_get_qdata (object, pygobject_instance_init_ref_count));
+
+        /* Take an extra reference, will be released in pyg_object_constructed(). */
+        Py_INCREF (wrapper);
+        g_object_set_qdata (object, pygobject_instance_init_ref_count,
+                            GINT_TO_POINTER (instance_init_ref_count + 1));
+    }
+
+    PyGILState_Release (state);
+}
+
 void
 pygobject__g_class_init (GObjectClass *class, PyObject *py_class)
 {
@@ -669,6 +807,7 @@ pygobject__g_class_init (GObjectClass *class, PyObject *py_class)
 
     class->set_property = pyg_object_set_property;
     class->get_property = pyg_object_get_property;
+    class->constructed = pyg_object_constructed;
     class->dispose = pyg_object_dispose;
 
     /* install signals */

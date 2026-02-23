@@ -49,6 +49,7 @@ GQuark pygobject_custom_key;
 GQuark pygobject_class_key;
 GQuark pygobject_class_init_key;
 GQuark pygobject_wrapper_key;
+GQuark pygobject_instance_init_ref_count;
 GQuark pygobject_has_dispose_method;
 GQuark pygobject_instance_data_key;
 
@@ -264,11 +265,15 @@ pygobject_register_class (PyObject *dict, const gchar *type_name, GType gtype,
 void
 pygobject_register_wrapper (PyObject *self)
 {
+    PyObject *error_type, *error_value, *error_traceback;
+    gboolean have_error = !!PyErr_Occurred ();
     PyGObject *gself;
     PyGObjectData *inst_data;
 
     g_return_if_fail (self != NULL);
     g_return_if_fail (PyObject_TypeCheck (self, &PyGObject_Type));
+
+    if (have_error) PyErr_Fetch (&error_type, &error_value, &error_traceback);
 
     gself = (PyGObject *)self;
 
@@ -298,6 +303,8 @@ pygobject_register_wrapper (PyObject *self)
     g_object_set_qdata (
         gself->obj, pygobject_has_dispose_method,
         GINT_TO_POINTER (PyObject_HasAttrString (self, "do_dispose")));
+
+    if (have_error) PyErr_Restore (error_type, error_value, error_traceback);
 }
 
 static PyObject *
@@ -626,44 +633,6 @@ pygobject_new (GObject *obj)
                                /*steal=*/FALSE, NULL);
 }
 
-static GPrivate pygobject_construction_wrapper;
-
-static inline void
-pygobject_init_wrapper_set (PyObject *wrapper)
-{
-    g_private_set (&pygobject_construction_wrapper, wrapper);
-}
-
-static inline PyObject *
-pygobject_init_wrapper_get (void)
-{
-    return (PyObject *)g_private_get (&pygobject_construction_wrapper);
-}
-
-static int
-pygobject_constructv (PyGObject *self, guint n_properties, const char *names[],
-                      const GValue values[])
-{
-    GObject *obj;
-    GType type;
-
-    g_assert (self->obj == NULL);
-    pygobject_init_wrapper_set ((PyObject *)self);
-
-    type = pyg_type_from_object ((PyObject *)self);
-    obj = g_object_new_with_properties (type, n_properties, names, values);
-
-    if (G_IS_INITIALLY_UNOWNED (obj)) {
-        g_object_ref_sink (obj);
-    }
-
-    pygobject_init_wrapper_set (NULL);
-    self->obj = obj;
-    pygobject_register_wrapper ((PyObject *)self);
-
-    return 0;
-}
-
 static void
 pygobject_unwatch_closure (gpointer data, GClosure *closure)
 {
@@ -706,78 +675,6 @@ pygobject_watch_closure (PyObject *self, GClosure *closure)
     data->closures = g_slist_prepend (data->closures, closure);
     g_closure_add_invalidate_notifier (closure, data,
                                        pygobject_unwatch_closure);
-}
-
-void
-pygobject__g_instance_init (GTypeInstance *instance, gpointer g_class)
-{
-    GObject *object;
-    PyObject *wrapper, *result;
-    PyGILState_STATE state;
-    gboolean needs_init = FALSE;
-
-    g_return_if_fail (G_IS_OBJECT (instance));
-
-    object = (GObject *)instance;
-
-    wrapper = g_object_get_qdata (object, pygobject_wrapper_key);
-    if (wrapper == NULL) {
-        wrapper = pygobject_init_wrapper_get ();
-        if (wrapper && ((PyGObject *)wrapper)->obj == NULL) {
-            ((PyGObject *)wrapper)->obj = object;
-            pygobject_register_wrapper (wrapper);
-        }
-    }
-    pygobject_init_wrapper_set (NULL);
-
-    state = PyGILState_Ensure ();
-
-    if (wrapper == NULL) {
-        /* this looks like a python object created through
-           * g_object_new -> we have no python wrapper, so create it
-           * now */
-
-        if (g_object_is_floating (object)) {
-            g_object_ref (object);
-            wrapper = pygobject_new_full (object,
-                                          /*steal=*/TRUE, g_class);
-            g_object_force_floating (object);
-        } else {
-            wrapper = pygobject_new_full (object,
-                                          /*steal=*/FALSE, g_class);
-        }
-
-        needs_init = TRUE;
-    }
-
-    /* XXX: used for Gtk.Template */
-    gboolean is_final_subclass = G_OBJECT_TYPE (object)
-                                 == G_OBJECT_CLASS_TYPE (g_class);
-    if (is_final_subclass
-        && PyObject_HasAttrString ((PyObject *)Py_TYPE (wrapper),
-                                   "__dontuse_ginstance_init__")) {
-        result =
-            PyObject_CallMethod (wrapper, "__dontuse_ginstance_init__", NULL);
-        if (result == NULL)
-            PyErr_Print ();
-        else
-            Py_DECREF (result);
-    }
-
-    if (needs_init) {
-        result = PyObject_CallMethod (wrapper, "__init__", NULL);
-        if (result == NULL)
-            PyErr_Print ();
-        else
-            Py_DECREF (result);
-
-#ifndef PYPY_VERSION
-        /* TODO: why does this decref cause PyPy to crash? */
-        Py_DECREF (wrapper);
-#endif
-    }
-
-    PyGILState_Release (state);
 }
 
 /* -------------- PyGObject behaviour ----------------- */
@@ -986,6 +883,7 @@ pygobject_init (PyGObject *self, PyObject *args, PyObject *kwargs)
     const PyGIArgumentFromPyCleanupData *cleanup_data = NULL;
     const char **names = NULL;
     GObjectClass *class;
+    GObject *obj;
 
     /* Only do GObject creation and property setting if the GObject hasn't
      * already been created. The case where self->obj already exists can occur
@@ -1021,8 +919,17 @@ pygobject_init (PyGObject *self, PyObject *args, PyObject *kwargs)
             class, kwargs, &n_properties, &names, &values, &cleanup_data))
         goto cleanup;
 
-    if (pygobject_constructv (self, n_properties, names, values))
-        PyErr_SetString (PyExc_RuntimeError, "could not create object");
+    pygobject_init_wrapper_set ((PyObject *)self);
+    obj = g_object_new_with_properties (object_type, n_properties, names,
+                                        values);
+    pygobject_init_wrapper_set (NULL);
+
+    if (G_IS_INITIALLY_UNOWNED (obj)) {
+        g_object_ref_sink (obj);
+    }
+
+    self->obj = obj;
+    pygobject_register_wrapper ((PyObject *)self);
 
 cleanup:
     for (i = 0; i < n_properties; i++) {
@@ -1036,14 +943,7 @@ cleanup:
 
     g_type_class_unref (class);
 
-    /* Call `do_constructed`, to simulate GObject's `constructed` vfunc. */
-    if (!PyErr_Occurred ()
-        && PyObject_HasAttrString ((PyObject *)self, "do_constructed")) {
-        PyObject *result =
-            PyObject_CallMethod ((PyObject *)self, "do_constructed", NULL);
-        if (result == NULL) return -1;
-        Py_DECREF (result);
-    }
+    if (PyErr_Occurred ()) return -1;
 
     return (self->obj) ? 0 : -1;
 }
@@ -2093,6 +1993,9 @@ pyg_object_register_types (PyObject *d)
     pygobject_class_init_key =
         g_quark_from_static_string ("PyGObject::class-init");
     pygobject_wrapper_key = g_quark_from_static_string ("PyGObject::wrapper");
+    pygobject_instance_init_ref_count =
+        g_quark_from_static_string ("PyGObject::instance-init-ref-count");
+
     pygobject_has_dispose_method =
         g_quark_from_static_string ("PyGObject::has-dispose-method");
     pygobject_instance_data_key =
@@ -2194,18 +2097,25 @@ pyg_object_new (PyGObject *self, PyObject *args, PyObject *kwargs)
 
     g_type_class_unref (class);
 
+    if (PyErr_Occurred ()) {
+        g_object_unref (obj);
+        return NULL;
+    }
+
     if (obj) {
         if (G_IS_INITIALLY_UNOWNED (obj)) {
             g_object_ref_sink (obj);
         }
+
         self = g_object_get_qdata (obj, pygobject_wrapper_key);
         if (self == NULL) {
             self = (PyGObject *)pygobject_new ((GObject *)obj);
             g_object_unref (obj);
         }
     } else {
-        PyErr_SetString (PyExc_RuntimeError, "could not create object");
-        self = NULL;
+        if (!PyErr_Occurred ())
+            PyErr_SetString (PyExc_RuntimeError, "could not create object");
+        return NULL;
     }
 
     return (PyObject *)self;
