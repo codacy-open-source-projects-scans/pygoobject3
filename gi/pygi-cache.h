@@ -47,28 +47,15 @@ typedef PyGIFunctionCache PyGIFunctionWithInstanceCache;
 typedef PyGIFunctionCache PyGIMethodCache;
 typedef PyGICallableCache PyGIClosureCache;
 
-typedef gboolean (*PyGIMarshalFromPyFunc) (PyGIInvokeState *state,
-                                           PyGICallableCache *callable_cache,
-                                           PyGIArgCache *arg_cache,
-                                           PyObject *py_arg, GIArgument *arg,
-                                           gpointer *cleanup_data);
+typedef gboolean (*PyGIMarshalFromPyFunc) (
+    PyGIInvokeState *state, PyGICallableCache *callable_cache,
+    PyGIArgCache *arg_cache, PyObject *py_arg, GIArgument *arg,
+    PyGIMarshalCleanupData *cleanup_data);
 
-typedef PyObject *(*PyGIMarshalToPyFunc) (PyGIInvokeState *state,
-                                          PyGICallableCache *callable_cache,
-                                          PyGIArgCache *arg_cache,
-                                          GIArgument *arg,
-                                          gpointer *cleanup_data);
-
-typedef void (*PyGIMarshalFromPyCleanupFunc) (PyGIInvokeState *state,
-                                              PyGIArgCache *arg_cache,
-                                              PyObject *py_arg, gpointer data,
-                                              gboolean was_processed);
-
-typedef void (*PyGIMarshalToPyCleanupFunc) (PyGIInvokeState *state,
-                                            PyGIArgCache *arg_cache,
-                                            gpointer cleanup_data,
-                                            gpointer data,
-                                            gboolean was_processed);
+typedef PyObject *(*PyGIMarshalToPyFunc) (
+    PyGIInvokeState *state, PyGICallableCache *callable_cache,
+    PyGIArgCache *arg_cache, GIArgument *arg,
+    PyGIMarshalCleanupData *cleanup_data);
 
 /* Argument meta types denote how we process the argument:
  *  - PYGI_META_ARG_TYPE_PARENT - parents may or may not have children
@@ -130,9 +117,6 @@ struct _PyGIArgCache {
 
     PyGIMarshalFromPyFunc from_py_marshaller;
     PyGIMarshalToPyFunc to_py_marshaller;
-
-    PyGIMarshalFromPyCleanupFunc from_py_cleanup;
-    PyGIMarshalToPyCleanupFunc to_py_cleanup;
 
     GDestroyNotify destroy_notify;
 
