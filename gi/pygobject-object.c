@@ -18,7 +18,8 @@
  * License along with this library; if not, see <http://www.gnu.org/licenses/>.
  */
 
-#include "pygobject-types.h"
+#include "pygobject-object.h"
+
 #include "pygboxed.h"
 #include "pygi-basictype.h"
 #include "pygi-fundamental.h"
@@ -28,8 +29,8 @@
 #include "pygi-util.h"
 #include "pygi-value.h"
 #include "pyginterface.h"
-#include "pygobject-object.h"
 #include "pygobject-props.h"
+#include "pygobject-types.h"
 
 extern PyObject *PyGIDeprecationWarning;
 
@@ -50,7 +51,6 @@ GQuark pygobject_custom_key;
 GQuark pygobject_class_key;
 GQuark pygobject_class_init_key;
 GQuark pygobject_wrapper_key;
-GQuark pygobject_instance_init_ref_count;
 GQuark pygobject_instance_data_key;
 
 
@@ -410,7 +410,7 @@ pygobject_new_with_interfaces (GType gtype)
     }
 
     /* Workaround python tp_(get|set)attr slot inheritance bug.
-       * Fixes bug #144135. */
+     * Fixes bug #144135. */
     if (!type->tp_getattr && py_parent_type->tp_getattr) {
         type->tp_getattro = NULL;
         type->tp_getattr = py_parent_type->tp_getattr;
@@ -423,8 +423,11 @@ pygobject_new_with_interfaces (GType gtype)
     type->tp_dealloc = py_parent_type->tp_dealloc;
     type->tp_alloc = py_parent_type->tp_alloc;
     type->tp_free = py_parent_type->tp_free;
-    type->tp_traverse = py_parent_type->tp_traverse;
-    type->tp_clear = py_parent_type->tp_clear;
+    /* The new type has GC set, only override tp_traverse if it's set */
+    if (py_parent_type->tp_traverse) {
+        type->tp_traverse = py_parent_type->tp_traverse;
+        type->tp_clear = py_parent_type->tp_clear;
+    }
 
     pygobject_inherit_slots (type, bases, FALSE);
 
@@ -831,6 +834,7 @@ pygobject_clear (PyGObject *self)
 }
 
 #ifndef PYPY_VERSION
+/* gobject-linter-ignore-next-line: g_object_virtual_methods_chain_up */
 static void
 pygobject_finalize (PyGObject *self)
 {
@@ -2031,8 +2035,6 @@ pyg_object_register_types (PyObject *d)
     pygobject_class_init_key =
         g_quark_from_static_string ("PyGObject::class-init");
     pygobject_wrapper_key = g_quark_from_static_string ("PyGObject::wrapper");
-    pygobject_instance_init_ref_count =
-        g_quark_from_static_string ("PyGObject::instance-init-ref-count");
 
     pygobject_instance_data_key =
         g_quark_from_static_string ("PyGObject::instance-data");

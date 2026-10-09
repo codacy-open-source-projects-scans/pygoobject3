@@ -22,9 +22,10 @@
  */
 
 #include "config.h"
+
+#include "pygboxed.h"
 #include "pygenum.h"
 #include "pygflags.h"
-#include "pygboxed.h"
 #include "pygi-async.h"
 #include "pygi-basictype.h"
 #include "pygi-boxed.h"
@@ -44,9 +45,9 @@
 #include "pygi-util.h"
 #include "pygi-value.h"
 #include "pyginterface.h"
-#include "pygobject-types.h"
 #include "pygobject-object.h"
 #include "pygobject-props.h"
+#include "pygobject-types.h"
 #include "pygpointer.h"
 
 PyObject *PyGIWarning;
@@ -451,7 +452,11 @@ _wrap_pyg_register_interface_info (PyObject *self, PyObject *args)
 {
     PyObject *py_g_type;
     GType g_type;
-    GInterfaceInfo *info;
+    GInterfaceInfo info = {
+        .interface_init = (GInterfaceInitFunc)initialize_interface,
+        .interface_finalize = NULL,
+        .interface_data = NULL,
+    };
 
     if (!PyArg_ParseTuple (args, "O!:register_interface_info",
                            &PyGTypeWrapper_Type, &py_g_type)) {
@@ -464,11 +469,7 @@ _wrap_pyg_register_interface_info (PyObject *self, PyObject *args)
         return NULL;
     }
 
-    info = g_new0 (GInterfaceInfo, 1);
-    info->interface_init = (GInterfaceInitFunc)initialize_interface;
-
-    pyg_register_interface_info (g_type, info);
-    g_free (info);
+    pyg_register_interface_info (g_type, &info);
 
     Py_RETURN_NONE;
 }
@@ -614,7 +615,6 @@ pyg_channel_read (PyObject *self, PyObject *args, PyObject *kwargs)
     int max_count = -1;
     PyObject *py_iochannel, *ret_obj = NULL;
     gsize total_read = 0;
-    GError *error = NULL;
     GIOStatus status = G_IO_STATUS_NORMAL;
     GIOChannel *iochannel = NULL;
 
@@ -637,6 +637,8 @@ pyg_channel_read (PyObject *self, PyObject *args, PyObject *kwargs)
         gsize single_read;
         char *buf;
         gsize buf_size;
+        /* Cleared by pygi_check_error(). */
+        GError *error = NULL;
 
         if (max_count == -1)
             buf_size = CHUNK_SIZE;

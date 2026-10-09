@@ -21,11 +21,10 @@
  * IN THE SOFTWARE.
  */
 
-#ifndef __PYGI_SIGNAL_CLOSURE_H__
-#define __PYGI_SIGNAL_CLOSURE_H__
+#pragma once
 
-#include <girepository/girepository.h>
 #include <pythoncapi_compat.h>
+#include <girepository/girepository.h>
 
 #include "pygobject-types.h"
 
@@ -42,5 +41,3 @@ GClosure *pygi_signal_closure_new (PyGObject *instance, GType g_type,
                                    PyObject *extra_args, PyObject *swap_data);
 
 G_END_DECLS
-
-#endif /* __PYGI_SIGNAL_CLOSURE_H__ */

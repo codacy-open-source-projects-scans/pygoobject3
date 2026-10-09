@@ -1,3 +1,4 @@
+import array
 import sys
 
 import unittest
@@ -21,7 +22,7 @@ from gi.repository import GObject, GLib, Gio
 from gi.repository import GIMarshallingTests
 import pytest
 
-from .helper import capture_exceptions, capture_glib_warnings, capture_output
+from .helper import capture_exceptions, capture_output
 import contextlib
 
 
@@ -942,13 +943,17 @@ class TestArray(unittest.TestCase):
 
     def test_array_int64_in(self):
         GIMarshallingTests.array_int64_in([-1, 0, 1, 2])
+        GIMarshallingTests.array_int64_in(array.array('q', [-1, 0, 1, 2]))
 
     def test_array_uint64_in(self):
         GIMarshallingTests.array_uint64_in([GLib.MAXUINT64, 0, 1, 2])
+        GIMarshallingTests.array_uint64_in(array.array('Q', [GLib.MAXUINT64, 0, 1, 2]))
 
     def test_array_unichar_in(self):
         GIMarshallingTests.array_unichar_in(list(CONSTANT_UCS4))
         GIMarshallingTests.array_unichar_in(CONSTANT_UCS4)
+        if sys.version_info[:2] >= (3, 13):
+            GIMarshallingTests.array_unichar_in(array.array('w', CONSTANT_UCS4))
 
     def test_array_unichar_out(self):
         result = list(CONSTANT_UCS4)
@@ -967,6 +972,7 @@ class TestArray(unittest.TestCase):
 
     def test_array_fixed_int_in(self):
         GIMarshallingTests.array_fixed_int_in(Sequence([-1, 0, 1, 2]))
+        GIMarshallingTests.array_fixed_int_in(array.array('i', [-1, 0, 1, 2]))
 
         self.assertRaises(
             TypeError, GIMarshallingTests.array_fixed_int_in, Sequence([-1, "0", 1, 2])
@@ -977,6 +983,7 @@ class TestArray(unittest.TestCase):
 
     def test_array_fixed_short_in(self):
         GIMarshallingTests.array_fixed_short_in(Sequence([-1, 0, 1, 2]))
+        GIMarshallingTests.array_fixed_short_in(array.array('h', [-1, 0, 1, 2]))
 
     def test_array_fixed_out(self):
         self.assertEqual([-1, 0, 1, 2], GIMarshallingTests.array_fixed_out())
@@ -996,15 +1003,20 @@ class TestArray(unittest.TestCase):
         GIMarshallingTests.array_in(Sequence([-1, 0, 1, 2]))
         GIMarshallingTests.array_in_guint64_len(Sequence([-1, 0, 1, 2]))
         GIMarshallingTests.array_in_guint8_len(Sequence([-1, 0, 1, 2]))
+        GIMarshallingTests.array_in(array.array('i', [-1, 0, 1, 2]))
+        GIMarshallingTests.array_in_guint64_len(array.array('i', [-1, 0, 1, 2]))
+        GIMarshallingTests.array_in_guint8_len(array.array('i', [-1, 0, 1, 2]))
 
     def test_array_in_len_before(self):
         GIMarshallingTests.array_in_len_before(Sequence([-1, 0, 1, 2]))
+        GIMarshallingTests.array_in_len_before(array.array('i', [-1, 0, 1, 2]))
 
     def test_array_in_len_zero_terminated(self):
         GIMarshallingTests.array_in_len_zero_terminated(Sequence([-1, 0, 1, 2]))
 
     def test_array_uint8_in(self):
         GIMarshallingTests.array_uint8_in(Sequence([97, 98, 99, 100]))
+        GIMarshallingTests.array_uint8_in(array.array('B', [97, 98, 99, 100]))
         GIMarshallingTests.array_uint8_in(b"abcd")
 
     def test_array_string_in(self):
@@ -1454,8 +1466,23 @@ class TestGBytes(unittest.TestCase):
         self.assertEqual(3, b.get_size())
         self.assertEqual(b"\x00\x01\xff", b.get_data())
 
+    def test_gbytes_create_from_array(self):
+        b = GLib.Bytes.new(array.array('B', b"\x00\x01\xff"))
+        self.assertEqual(3, b.get_size())
+        self.assertEqual(b"\x00\x01\xff", b.get_data())
+
+    def test_gbytes_create_from_bytearray(self):
+        b = GLib.Bytes.new(bytearray(b"\x00\x01\xff"))
+        self.assertEqual(3, b.get_size())
+        self.assertEqual(b"\x00\x01\xff", b.get_data())
+
     def test_gbytes_create_take(self):
         b = GLib.Bytes.new_take(b"\x00\x01\xff")
+        self.assertEqual(3, b.get_size())
+        self.assertEqual(b"\x00\x01\xff", b.get_data())
+
+    def test_gbytes_create_take_from_array(self):
+        b = GLib.Bytes.new_take(array.array('B', b"\x00\x01\xff"))
         self.assertEqual(3, b.get_size())
         self.assertEqual(b"\x00\x01\xff", b.get_data())
 
@@ -1821,6 +1848,14 @@ class TestGValue(unittest.TestCase):
             GIMarshallingTests.GEnum.__gtype__, GIMarshallingTests.GEnum.VALUE3
         )
         GIMarshallingTests.gvalue_in_enum(value)
+
+    def test_unset_gvalue(self):
+        v = GObject.Value()
+        v2 = GObject.Value(GObject.Value.__gtype__, v)
+
+        assert type(v2) is GObject.Value
+        with pytest.raises(TypeError):
+            v2.get_value()
 
     def test_gvalue_out(self):
         self.assertEqual(42, GIMarshallingTests.gvalue_out())
@@ -2621,7 +2656,7 @@ class TestStructure(unittest.TestCase):
     def test_pointer_array_struct_with_guint8(self):
         out_struct = GIMarshallingTests.PointerArrayStruct.with_uint8_array()
 
-        with capture_glib_warnings(allow_warnings=True):
+        with pytest.raises(TypeError):
             assert out_struct.array == list(map(ord, "0123456789"))
 
     def test_struct_field_assignment(self):
@@ -3156,6 +3191,42 @@ class TestPythonGObject(unittest.TestCase):
         GIMarshallingTests.callback_owned_boxed(callback, None)
         GIMarshallingTests.callback_owned_boxed(nop_callback, None)
         self.assertEqual(self.box.long_, 1)
+
+    def test_callback_user_data_after_callback(self):
+        def callback(*args):
+            self.callback_args = args
+
+        GIMarshallingTests.callback_user_data_after_callback(1, 2, callback)
+        self.assertEqual(self.callback_args, (1, 2))
+
+        GIMarshallingTests.callback_user_data_after_callback(3, 4, callback, "testdata")
+        self.assertEqual(self.callback_args, (3, 4, "testdata"))
+
+        GIMarshallingTests.callback_user_data_after_callback(
+            5, 6, callback, "more testdata", "even more testdata"
+        )
+        self.assertEqual(
+            self.callback_args, (5, 6, "more testdata", "even more testdata")
+        )
+
+    def test_callback_user_data_before_callback(self):
+        def callback(*args):
+            self.callback_args = args
+
+        GIMarshallingTests.callback_user_data_before_callback(1, 2, None, callback)
+        self.assertEqual(self.callback_args, (1, 2, None))
+
+        GIMarshallingTests.callback_user_data_before_callback(
+            3, 4, "testdata", callback
+        )
+        self.assertEqual(self.callback_args, (3, 4, "testdata"))
+
+        GIMarshallingTests.callback_user_data_before_callback(
+            5, 6, ("more testdata", "even more testdata"), callback
+        )
+        self.assertEqual(
+            self.callback_args, (5, 6, ("more testdata", "even more testdata"))
+        )
 
 
 class TestMultiOutputArgs(unittest.TestCase):

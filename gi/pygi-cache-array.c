@@ -20,12 +20,12 @@
 
 #include "pygi-argument.h"
 #include "pygi-basictype.h"
+#include "pygi-cache-private.h"
 #include "pygi-info.h"
 #include "pygi-util.h"
-#include "pygi-cache-private.h"
 
 /*
- * GArray to Python
+ * GArray from Python
  */
 
 static gboolean
@@ -173,6 +173,152 @@ array_clear_utf8 (gpointer *utf8)
     g_clear_pointer (utf8, g_free);
 }
 
+typedef struct {
+    Py_buffer view;
+    gpointer contiguous;
+} PyGIBufferCleanupData;
+
+static void
+free_py_buffer (PyGIBufferCleanupData *buffer)
+{
+    PyBuffer_Release (&buffer->view);
+    g_free (buffer->contiguous);
+    g_free (buffer);
+}
+
+static void
+free_py_buffer_keep_contiguous (PyGIBufferCleanupData *buffer)
+{
+    PyBuffer_Release (&buffer->view);
+    g_free (buffer);
+}
+
+static gboolean
+_pygi_marshal_from_py_buffer (PyGIInvokeState *state,
+                              PyGICallableCache *callable_cache,
+                              PyGIArgCache *arg_cache, PyObject *py_arg,
+                              GIArgument *arg,
+                              PyGIMarshalCleanupData *cleanup_data,
+                              guint length)
+{
+    PyGISequenceCache *sequence_cache = (PyGISequenceCache *)arg_cache;
+    PyGIArgGArray *array_cache = (PyGIArgGArray *)arg_cache;
+    gboolean must_be_zero_terminated =
+        gi_type_info_is_zero_terminated (arg_cache->type_info);
+    GIArrayType array_type;
+    GITypeTag type_tag;
+    char format = '\0';
+    PyGIBufferCleanupData *buffer = NULL;
+    gboolean valid = FALSE;
+    gboolean is_zero_terminated = FALSE;
+
+    array_type = gi_type_info_get_array_type (arg_cache->type_info);
+    if (array_type != GI_ARRAY_TYPE_C) {
+        return FALSE;
+    }
+
+    if (!PyObject_CheckBuffer (py_arg)) {
+        return FALSE;
+    }
+
+    buffer = g_new0(PyGIBufferCleanupData, 1);
+    if (PyObject_GetBuffer (py_arg, &buffer->view, PyBUF_FULL_RO) < 0) {
+        PyErr_Clear ();
+        g_free (buffer);
+        return FALSE;
+    }
+
+    type_tag = sequence_cache->item_cache->type_tag;
+    if (buffer->view.format == NULL) {
+        format = 'B';
+    } else if (buffer->view.format[0] != '\0'
+               && buffer->view.format[1] == '\0') {
+        format = buffer->view.format[0];
+    }
+    valid =
+        (format == 'b' && type_tag == GI_TYPE_TAG_INT8) ||
+        (format == 'B' && type_tag == GI_TYPE_TAG_UINT8) ||
+        (format == 'h' && type_tag == GI_TYPE_TAG_INT16) ||
+        (format == 'H' && type_tag == GI_TYPE_TAG_UINT16) ||
+        (format == 'i' && type_tag == GI_TYPE_TAG_INT32) ||
+        (format == 'I' && type_tag == GI_TYPE_TAG_UINT32) ||
+        (format == 'q' && type_tag == GI_TYPE_TAG_INT64) ||
+        (format == 'Q' && type_tag == GI_TYPE_TAG_UINT64) ||
+        (format == 'f' && type_tag == GI_TYPE_TAG_FLOAT) ||
+        (format == 'd' && type_tag == GI_TYPE_TAG_DOUBLE) ||
+        (format == 'w' && type_tag == GI_TYPE_TAG_UNICHAR);
+    valid = valid && buffer->view.ndim <= 1; /* 0 is a single element. */
+    if (!valid) {
+        PyBuffer_Release (&buffer->view);
+        g_free (buffer);
+        return FALSE;
+    }
+
+    if (must_be_zero_terminated) {
+        if (buffer->view.ndim == 1 && buffer->view.len > 0) {
+            Py_ssize_t last_index = buffer->view.shape[0] - 1;
+            const char *last = PyBuffer_GetPointer (&buffer->view, &last_index);
+            is_zero_terminated = TRUE;
+            for (Py_ssize_t i = 0; i < buffer->view.itemsize; i++) {
+                if (last[i] != 0) {
+                    is_zero_terminated = FALSE;
+                    break;
+                }
+            }
+        } else {
+            is_zero_terminated = FALSE;
+        }
+    }
+    if (PyBuffer_IsContiguous (&buffer->view, 'C')
+        && (!must_be_zero_terminated || is_zero_terminated)) {
+        arg->v_pointer = buffer->view.buf;
+    } else {
+        buffer->contiguous = g_malloc0 (
+            buffer->view.len +
+            (must_be_zero_terminated && !is_zero_terminated ?
+                 buffer->view.itemsize : 0));
+        PyBuffer_ToContiguous (
+                buffer->contiguous, &buffer->view,
+                buffer->view.len, 'C');
+        arg->v_pointer = buffer->contiguous;
+    }
+
+    switch (arg_cache->transfer) {
+    case GI_TRANSFER_NOTHING:
+        /* Free everything in cleanup. */
+        pygi_marshal_cleanup_data_init_full (
+                cleanup_data, buffer,
+                (GDestroyNotify)free_py_buffer,
+                (GDestroyNotify)free_py_buffer);
+        break;
+    case GI_TRANSFER_CONTAINER:
+        /* Only the elements need to be deleted. */
+        pygi_marshal_cleanup_data_init_full (
+                cleanup_data, buffer,
+                (GDestroyNotify)free_py_buffer,
+                (GDestroyNotify)free_py_buffer);
+        break;
+    case GI_TRANSFER_EVERYTHING:
+        /* No memory cleanup: it is given to the callee, but
+         * we still clean up the buffer object from Python. */
+        if (buffer->contiguous == NULL) {
+            buffer->contiguous = g_memdup2 (
+                    buffer->view.buf, buffer->view.len);
+            arg->v_pointer = buffer->contiguous;
+        }
+        pygi_marshal_cleanup_data_init_full (
+                cleanup_data, buffer,
+                (GDestroyNotify)free_py_buffer_keep_contiguous,
+                (GDestroyNotify)free_py_buffer);
+        break;
+    default:
+        g_assert_not_reached ();
+    }
+
+    return _marshal_length_arg_from_py (state, callable_cache,
+                                        array_cache, length);
+}
+
 static gboolean
 _pygi_marshal_from_py_array (PyGIInvokeState *state,
                              PyGICallableCache *callable_cache,
@@ -225,29 +371,14 @@ _pygi_marshal_from_py_array (PyGIInvokeState *state,
         return FALSE;
     }
 
-    array_type = gi_type_info_get_array_type (arg_cache->type_info);
-
     /* Handle simple byte arrays first */
-    if (array_type == GI_ARRAY_TYPE_C
-        && sequence_cache->item_cache->type_tag == GI_TYPE_TAG_UINT8
-        && PyBytes_Check (py_arg)) {
-        gchar *data = PyBytes_AsString (py_arg); /* borrowed */
-
-        /* Avoid making a copy if the data is not transferred
-         * to the C function and cannot not be modified by it.
-         */
-        if (arg_cache->transfer == GI_TRANSFER_NOTHING
-            && !is_zero_terminated) {
-            arg->v_pointer = data;
-            /* Borrowing, nothing to clean up. */
-            if (!_marshal_length_arg_from_py (state, callable_cache,
-                                              array_cache, length))
-                return FALSE;
-
-            return TRUE;
-        }
+    if (_pygi_marshal_from_py_buffer (
+                state, callable_cache, arg_cache, py_arg, arg, cleanup_data,
+                length)) {
+        return TRUE;
     }
 
+    array_type = gi_type_info_get_array_type (arg_cache->type_info);
     item_size = (guint)array_cache->item_size;
     is_ptr_array = (array_type == GI_ARRAY_TYPE_PTR_ARRAY);
 
@@ -264,8 +395,9 @@ _pygi_marshal_from_py_array (PyGIInvokeState *state,
     }
 
     if (sequence_cache->item_cache->type_tag == GI_TYPE_TAG_UINT8
-        && PyBytes_Check (py_arg)) {
-        gchar *data = PyBytes_AsString (py_arg);
+        && ((PyBytes_Check (py_arg)) || PyByteArray_Check (py_arg))) {
+        gchar *data = PyBytes_Check (py_arg) ? PyBytes_AsString (py_arg)
+                                             : PyByteArray_AsString (py_arg);
 
         memcpy (array_->data, data, length);
         array_->len = length;
@@ -433,7 +565,7 @@ err:
 }
 
 /*
- * GArray from Python
+ * GArray to Python
  */
 
 static GArray *
@@ -513,7 +645,6 @@ _pygi_marshal_to_py_array (PyGIInvokeState *state,
         gsize item_size;
         PyGIMarshalToPyFunc item_to_py_marshaller;
         PyGIArgCache *item_arg_cache;
-        gboolean item_size_warning = FALSE;
 
         py_obj = PyList_New (array_->len);
         if (py_obj == NULL) goto err;
@@ -542,20 +673,11 @@ _pygi_marshal_to_py_array (PyGIInvokeState *state,
                 if (item_size == sizeof (gpointer)) {
                     item_arg.v_pointer = g_array_index (array_, gpointer, i);
                 } else {
-                    // TODO: this warning needs to be actionable
-                    //  I do not have enough context to show which field/argument is in error, maybe
-                    //  allow to raise errors for those cases (e.g. an option that can be set in unit tests)
-                    if (!item_size_warning) {
-                        g_warning (
-                            "Array type is assumed to be a pointer, but "
-                            "item size is %" G_GSIZE_FORMAT " bytes",
-                            item_size);
-                        item_size_warning = TRUE;
-                    }
-
-                    // For now, copy the right number of bytes
-                    memcpy (&item_arg, array_->data + i * item_size,
-                            item_size);
+                    PyErr_Format (PyExc_TypeError,
+                                  "Array type is assumed to be a pointer, but "
+                                  "item size is %" G_GSIZE_FORMAT " bytes",
+                                  item_size);
+                    return NULL;
                 }
             } else if (item_arg_cache->type_tag == GI_TYPE_TAG_INTERFACE) {
                 PyGIInterfaceCache *iface_cache =

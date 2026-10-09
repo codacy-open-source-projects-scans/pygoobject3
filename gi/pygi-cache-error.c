@@ -20,8 +20,8 @@
  * License along with this library; if not, see <http://www.gnu.org/licenses/>.
  */
 
-#include "pygi-error.h"
 #include "pygi-cache-private.h"
+#include "pygi-error.h"
 
 static gboolean
 _pygi_marshal_from_py_gerror (PyGIInvokeState *state,
@@ -30,6 +30,7 @@ _pygi_marshal_from_py_gerror (PyGIInvokeState *state,
                               GIArgument *arg,
                               PyGIMarshalCleanupData *cleanup_data)
 {
+    /* gobject-linter-ignore-next-line: g_error_leak */
     GError *error = NULL;
     if (Py_IsNone (py_arg)) {
         arg->v_pointer = NULL;

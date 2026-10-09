@@ -53,6 +53,7 @@ if typing.TYPE_CHECKING:
     IOChannel = GLib.IOChannel
     IOCondition = GLib.IOCondition
     PollFD = GLib.PollFD
+    Uri = GLib.Uri
 else:
     from gi.module import get_introspection_module
 
@@ -67,15 +68,12 @@ from gi._error import GError
 Error = GError
 
 
-class Pid:
-    def __init__(self, pid):
-        self._pid = pid
-
-    def __int__(self):
-        return self._pid
-
+class Pid(int):
     def close(self):
-        GLib.spawn_close_pid(self._pid)
+        GLib.spawn_close_pid(self)
+
+    def __del__(self):
+        self.close()
 
 
 def spawn_async(
@@ -981,6 +979,15 @@ class PollFD(GLib.PollFD):
 
 PollFD = override(PollFD)
 __all__.append("PollFD")
+
+
+class Uri(GLib.Uri):
+    def __str__(self) -> str:
+        return self.to_string()
+
+
+Uri = override(Uri)
+__all__.append("Uri")
 
 
 # The GI GLib API uses g_child_watch_add_full renamed to g_child_watch_add with

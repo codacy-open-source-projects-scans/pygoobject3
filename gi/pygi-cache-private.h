@@ -17,8 +17,7 @@
  * License along with this library; if not, see <http://www.gnu.org/licenses/>.
  */
 
-#ifndef __PYGI_CACHE_PRIVATE_H__
-#define __PYGI_CACHE_PRIVATE_H__
+#pragma once
 
 #include "pygi-cache.h"
 
@@ -121,11 +120,6 @@ PyObject *pygi_marshal_to_py_basic_type_cache_adapter (
     PyGIArgCache *arg_cache, GIArgument *arg,
     PyGIMarshalCleanupData *cleanup_data);
 
-
-/* Needed for hack in pygi-cache-array.c */
-void pygi_arg_gvalue_from_py_cleanup (PyGIInvokeState *state,
-                                      PyGIMarshalCleanupData cleanup_data);
-
 void pygi_marshal_cleanup_data_init_full (PyGIMarshalCleanupData *cleanup_data,
                                           gpointer data,
                                           GDestroyNotify destroy,
@@ -140,5 +134,3 @@ void pygi_marshal_cleanup_data_destroy_array (GArray *item_cleanups);
 void pygi_marshal_cleanup_data_destroy_array_failed (GArray *item_cleanups);
 
 G_END_DECLS
-
-#endif /*__PYGI_CACHE_PRIVATE_H__*/

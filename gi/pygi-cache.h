@@ -18,9 +18,9 @@
  * License along with this library; if not, see <http://www.gnu.org/licenses/>.
  */
 
-#ifndef __PYGI_CACHE_H__
-#define __PYGI_CACHE_H__
+#pragma once
 
+#include <pythoncapi_compat.h>
 
 /* Workaround for FFI_GO_CLOSURES not being defined on macOS
  * See also: https://github.com/openjdk/jdk17u-dev/pull/741
@@ -242,7 +242,7 @@ PyObject *pygi_function_cache_invoke (PyGIFunctionCache *function_cache,
 PyGIFunctionCache *pygi_ccallback_cache_new (GICallableInfo *info,
                                              GCallback function_ptr);
 
-PyObject *pygi_ccallback_cache_invoke (PyGIFunctionCache *function_cache,
+PyObject *pygi_ccallback_cache_invoke (PyGICCallbackCache *function_cache,
                                        PyObject *const *py_args,
                                        size_t py_nargsf, PyObject *py_kwnames,
                                        gpointer user_data);
@@ -271,9 +271,8 @@ static inline void
 _pygi_callable_cache_set_arg (PyGICallableCache *cache, guint index,
                               PyGIArgCache *arg_cache)
 {
+    g_assert (index < cache->args_cache->len);
     cache->args_cache->pdata[index] = arg_cache;
 }
 
 G_END_DECLS
-
-#endif /* __PYGI_CACHE_H__ */
